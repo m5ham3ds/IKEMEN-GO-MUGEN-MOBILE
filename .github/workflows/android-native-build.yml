@@ -26,12 +26,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           test -f go.mod
           test -f build/build.sh
           test -f build/build_android.sh
           test -f build/docker/android/Dockerfile
           test -f build/docker/android/docker-compose.yml
+
           grep -Eq '^go [0-9]+\.[0-9]+(\.[0-9]+)?$' go.mod
+
           echo "Android build inputs are present."
 
       - name: Build native libraries with the repository Docker recipe
@@ -41,10 +44,14 @@ jobs:
           APP_VERSION: "mugen-mobile-test"
         run: |
           set -euo pipefail
+
           export APP_BUILDTIME="$(date -u +%Y.%m.%d)"
+
           docker --version
           docker compose version
-          chmod +x build/build_android.sh
+
+          chmod +x build/build.sh build/build_android.sh
+
           ./build/build_android.sh
 
       - name: Verify and collect native outputs
@@ -54,26 +61,31 @@ jobs:
 
           test -s bin/libmain.so
           test -s bin/libmain.h
+
           readelf -h bin/libmain.so | grep -q 'AArch64'
 
           mkdir -p artifact/libs
+
           cp -L bin/libmain.so artifact/libmain.so
           cp bin/libmain.h artifact/libmain.h
 
           shopt -s nullglob
           libraries=(lib/*.so*)
+
           if (( ${#libraries[@]} == 0 )); then
             echo "ERROR: no Android shared libraries were produced under lib/." >&2
             exit 1
           fi
 
           copied=0
+
           for src in "${libraries[@]}"; do
             if [[ -e "$src" || -L "$src" ]]; then
               cp -L "$src" "artifact/libs/$(basename "$src")"
               copied=$((copied + 1))
             fi
           done
+
           if (( copied == 0 )); then
             echo "ERROR: no dependency libraries could be copied." >&2
             exit 1
@@ -92,6 +104,7 @@ jobs:
 
           (
             cd artifact
+
             find . -type f ! -name SHA256SUMS.txt -print0 \
               | sort -z \
               | xargs -0 sha256sum > SHA256SUMS.txt

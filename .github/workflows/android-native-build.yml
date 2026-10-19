@@ -1,3 +1,4 @@
+
 name: Android Native Libraries (Test Build)
 
 on:
@@ -22,7 +23,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Verify official Android build inputs
+      - name: Verify Android build inputs
         shell: bash
         run: |
           set -euo pipefail
@@ -37,7 +38,49 @@ jobs:
 
           echo "Android build inputs are present."
 
-      - name: Build native libraries with the repository Docker recipe
+      - name: Fix build script invocation for Docker
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          compose_file = Path(
+              "build/docker/android/docker-compose.yml"
+          )
+
+          content = compose_file.read_text(encoding="utf-8")
+          old_command = "./build/build.sh"
+          new_command = "bash ./build/build.sh"
+
+          if old_command not in content:
+              raise SystemExit(
+                  "ERROR: ./build/build.sh was not found in "
+                  "build/docker/android/docker-compose.yml. "
+                  "The Compose command must be inspected before "
+                  "applying this fix."
+              )
+
+          updated = content.replace(old_command, new_command)
+          compose_file.write_text(updated, encoding="utf-8")
+
+          print("Updated Docker Compose build invocation:")
+          for number, line in enumerate(
+              updated.splitlines(), start=1
+          ):
+              if "build.sh" in line:
+                  print(f"{number}: {line.strip()}")
+
+          if new_command not in updated:
+              raise SystemExit(
+                  "ERROR: the Bash invocation fix was not applied."
+              )
+          PY
+
+          chmod +x build/build_android.sh
+
+      - name: Build native Android libraries
         shell: bash
         env:
           BUILD_ANDROID_APK: "0"
@@ -49,8 +92,6 @@ jobs:
 
           docker --version
           docker compose version
-
-          chmod +x build/build.sh build/build_android.sh
 
           ./build/build_android.sh
 
@@ -104,7 +145,6 @@ jobs:
 
           (
             cd artifact
-
             find . -type f ! -name SHA256SUMS.txt -print0 \
               | sort -z \
               | xargs -0 sha256sum > SHA256SUMS.txt
@@ -114,7 +154,7 @@ jobs:
           file artifact/libmain.so artifact/libs/*
           du -ah artifact | sort -h | tail -30
 
-      - name: Upload test libraries as an artifact
+      - name: Upload native libraries artifact
         uses: actions/upload-artifact@v7
         with:
           name: ikemen-android-native-test-${{ github.run_number }}

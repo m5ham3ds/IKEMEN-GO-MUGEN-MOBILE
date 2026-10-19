@@ -1,4 +1,3 @@
-
 name: Android Native Libraries (Test Build)
 
 on:
@@ -58,24 +57,24 @@ jobs:
               raise SystemExit(
                   "ERROR: ./build/build.sh was not found in "
                   "build/docker/android/docker-compose.yml. "
-                  "The Compose command must be inspected before "
-                  "applying this fix."
+                  "Inspect the actual Compose command before changing it."
               )
 
           updated = content.replace(old_command, new_command)
           compose_file.write_text(updated, encoding="utf-8")
 
-          print("Updated Docker Compose build invocation:")
+          if new_command not in updated:
+              raise SystemExit(
+                  "ERROR: failed to update the Compose build command."
+              )
+
+          print("Docker Compose build command updated successfully.")
+
           for number, line in enumerate(
               updated.splitlines(), start=1
           ):
               if "build.sh" in line:
                   print(f"{number}: {line.strip()}")
-
-          if new_command not in updated:
-              raise SystemExit(
-                  "ERROR: the Bash invocation fix was not applied."
-              )
           PY
 
           chmod +x build/build_android.sh
@@ -94,6 +93,46 @@ jobs:
           docker compose version
 
           ./build/build_android.sh
+
+      - name: Inspect native library symbols
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s bin/libmain.so
+
+          if ! command -v readelf >/dev/null 2>&1; then
+            echo "ERROR: readelf is not available on the runner." >&2
+            exit 1
+          fi
+
+          echo "========================================"
+          echo "ELF FILE INFORMATION"
+          echo "========================================"
+
+          file bin/libmain.so
+          readelf -h bin/libmain.so
+
+          echo "========================================"
+          echo "EXPORTED DYNAMIC SYMBOLS"
+          echo "========================================"
+
+          if ! readelf --dyn-syms --wide bin/libmain.so \
+            | grep -Ei 'SDL_main|nativeOnSDLReady|swap|tag|player|team|control'; then
+            echo "No matching names found in the dynamic symbol table."
+          fi
+
+          echo "========================================"
+          echo "FULL ELF SYMBOL TABLE"
+          echo "========================================"
+
+          if ! readelf --symbols --wide bin/libmain.so \
+            | grep -Ei 'SDL_main|nativeOnSDLReady|swap|tag|player|team|control'; then
+            echo "No matching names found in the ELF symbol table."
+          fi
+
+          echo "Symbol inspection completed."
+          echo "An absent match does not by itself prove a feature is missing."
 
       - name: Verify and collect native outputs
         shell: bash
@@ -145,12 +184,16 @@ jobs:
 
           (
             cd artifact
+
             find . -type f ! -name SHA256SUMS.txt -print0 \
               | sort -z \
               | xargs -0 sha256sum > SHA256SUMS.txt
           )
 
-          echo "Native library output summary:"
+          echo "========================================"
+          echo "NATIVE LIBRARY OUTPUT SUMMARY"
+          echo "========================================"
+
           file artifact/libmain.so artifact/libs/*
           du -ah artifact | sort -h | tail -30
 

@@ -1,0 +1,110 @@
+name: Android Native Libraries (Test Build)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ikemen-android-native-test
+  cancel-in-progress: false
+
+jobs:
+  build-android-native:
+    name: Build arm64 Android native libraries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out selected source ref
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Verify official Android build inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f go.mod
+          test -f build/build.sh
+          test -f build/build_android.sh
+          test -f build/docker/android/Dockerfile
+          test -f build/docker/android/docker-compose.yml
+          grep -Eq '^go [0-9]+\.[0-9]+(\.[0-9]+)?$' go.mod
+          echo "Android build inputs are present."
+
+      - name: Build native libraries with the repository Docker recipe
+        shell: bash
+        env:
+          BUILD_ANDROID_APK: "0"
+          APP_VERSION: "mugen-mobile-test"
+        run: |
+          set -euo pipefail
+          export APP_BUILDTIME="$(date -u +%Y.%m.%d)"
+          docker --version
+          docker compose version
+          chmod +x build/build_android.sh
+          ./build/build_android.sh
+
+      - name: Verify and collect native outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s bin/libmain.so
+          test -s bin/libmain.h
+          readelf -h bin/libmain.so | grep -q 'AArch64'
+
+          mkdir -p artifact/libs
+          cp -L bin/libmain.so artifact/libmain.so
+          cp bin/libmain.h artifact/libmain.h
+
+          shopt -s nullglob
+          libraries=(lib/*.so*)
+          if (( ${#libraries[@]} == 0 )); then
+            echo "ERROR: no Android shared libraries were produced under lib/." >&2
+            exit 1
+          fi
+
+          copied=0
+          for src in "${libraries[@]}"; do
+            if [[ -e "$src" || -L "$src" ]]; then
+              cp -L "$src" "artifact/libs/$(basename "$src")"
+              copied=$((copied + 1))
+            fi
+          done
+          if (( copied == 0 )); then
+            echo "ERROR: no dependency libraries could be copied." >&2
+            exit 1
+          fi
+
+          {
+            echo "Build purpose: MUGEN-MOBILE engine integration test"
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Ref: ${GITHUB_REF}"
+            echo "Commit: $(git rev-parse HEAD)"
+            echo "Architecture: Android arm64-v8a (AArch64)"
+            echo "Go requirement: $(awk '$1 == "go" { print $2; exit }' go.mod)"
+            grep -E '^ARG (GO_VERSION|ANDROID_NDK_VERSION|ANDROID_PLATFORM|ANDROID_BUILD_TOOLS)=' build/docker/android/Dockerfile || true
+            echo "APK packaging: disabled (BUILD_ANDROID_APK=0)"
+          } > artifact/BUILD_INFO.txt
+
+          (
+            cd artifact
+            find . -type f ! -name SHA256SUMS.txt -print0 \
+              | sort -z \
+              | xargs -0 sha256sum > SHA256SUMS.txt
+          )
+
+          echo "Native library output summary:"
+          file artifact/libmain.so artifact/libs/*
+          du -ah artifact | sort -h | tail -30
+
+      - name: Upload test libraries as an artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ikemen-android-native-test-${{ github.run_number }}
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 14
